@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0b0f14" />
+<title>Med + Meal Planner</title>
+<style>
+  :root{--bg:#0b0f14;--fg:#e5f0ff;--muted:#8aa0b3;--accent:#3aa0ff}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--fg);font:14px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;display:flex;justify-content:center;align-items:center}
+  .app{width:min(92vw,520px);padding:14px 12px;border:1px solid #1b2836;border-radius:12px;background:#0e141b;box-shadow:0 0 0 1px #0a1119 inset}
+  h1{margin:0 0 8px 0;font-size:16px;letter-spacing:.5px;text-align:center;color:#cfe6ff}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .row > label{display:flex;align-items:center;gap:6px;background:#0a121a;border:1px solid #1a2a3a;padding:6px 8px;border-radius:8px}
+  input[type=number]{width:70px;background:#081018;border:1px solid #1b2c3e;border-radius:6px;color:var(--fg);padding:4px 6px}
+  button{background:#12263a;border:1px solid #254564;color:#d7ecff;padding:8px 10px;border-radius:8px;font-weight:600;cursor:pointer}
+  button:active{transform:translateY(1px)}
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0}
+  .kpis div{background:#0b1622;border:1px solid #1a2c40;border-radius:8px;padding:8px 10px}
+  .kpis b{color:#bfe0ff}
+  pre{margin:6px 0 0 0;white-space:pre;line-height:1.15}
+  .legend{color:var(--muted);font-size:12px;margin-top:8px}
+  .footer{margin-top:10px;color:#6e88a3;text-align:center;font-size:12px}
+  .grid{border:1px solid #1b2b3b;border-radius:8px;padding:8px;background:#0a121a}
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>MED + MEAL PLANNER</h1>
+
+  <div class="kpis" id="kpis">
+    <div><b>Last Pill:</b> <span id="kpi_lp">—</span></div>
+    <div><b>Next Pill:</b> <span id="kpi_np">—</span></div>
+    <div><b>Last Meal:</b> <span id="kpi_lm">—</span></div>
+    <div><b>Next Eat:</b>  <span id="kpi_ne">—</span></div>
+  </div>
+
+  <div class="grid">
+    <pre id="hdr"></pre>
+    <pre id="rowC"></pre>
+    <pre id="rowH"></pre>
+    <pre id="rowN"></pre>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="row">
+    <label>Now< input id="now" type="number" step="0.25" min="0" max="24" /></label>
+    <label>Pill 1< input id="p1" type="number" step="0.25" min="0" max="24" /></label>
+    <label>Pill 2< input id="p2" type="number" step="0.25" min="0" max="24" /></label>
+    <label>Pill 3< input id="p3" type="number" step="0.25" min="0" max="24" /></label>
+    <label>Eat 1< input id="e1" type="number" step="0.25" min="0" max="24" /></label>
+    <label>Eat 2< input id="e2" type="number" step="0.25" min="0" max="24" /></label>
+    <label>Eat 3< input id="e3" type="number" step="0.25" min="0" max="24" /></label>
+  </div>
+
+  <div class="row">
+    <button id="start">Start Day</button>
+    <button id="apply">Apply Edits</button>
+    <button id="update">Update</button>
+    <button id="reset" style="margin-left:auto;background:#2a1320;border-color:#6b203c">Reset Day</button>
+  </div>
+
+  <div class="footer">v0.1 — all data stays in your browser (LocalStorage)</div>
+</div>
+
+<script>
+/* ----- constants ----- */
+const PILL_MIN=6, PILL_TGT=8, PILL_MAX=10, PILL_HARD_MAX=12, NO_EAT=1, NO_PILL=2;
+const LSKEY="medmeal_state_v01";
+
+/* ----- state ----- */
+let S={
+  _day_started:false,
+  _now:13.0,
+  _plan_pills:[6.0,14.0,22.0],
+  _eat_times:[8.0,13.0,18.0]
+};
+
+/* ----- utils ----- */
+const clamp24=x=>Math.max(0,Math.min(24,Number(x)||0));
+const q = s=>document.getElementById(s);
+function roundQ(x){ return Math.round(x*4)/4; }
+function to12mm(h){
+  let hr=Math.floor((h%24+24)%24), m=Math.round((h-hr)*60);
+  if(m===60){hr=(hr+1)%24; m=0}
+  const ap=hr>=12?"PM":"AM", d=(hr%12||12), mm=(m<10?"0":"")+m;
+  return `${d}:${mm} ${ap}`;
+}
+function hoursHeader12(){ return "12A 1 2 3 4 5 6 7 8 9 10 11 12P 1 2 3 4 5 6 7 8 9 10 11"; }
+
+function buildColors(pills,eats,nowH){
+  let col=Array(24).fill("blue");
+  // eat targets
+  eats.forEach(e=>col[Math.floor(e)%24]="green");
+  // pills
+  pills.forEach(p=>col[Math.floor(p)%24]="red");
+  // no-eat buffers both sides
+  pills.forEach(p=>{
+    const h=Math.floor(p)%24, L=(h+23)%24, R=(h+1)%24;
+    if(col[L]!=="red") col[L]="orange";
+    if(col[R]!=="red") col[R]="orange";
+  });
+  // late/breach overlay based on hours since last pill hour
+  function lastRedAtOrBefore(h){
+    let prev=-1; for(const p of pills){ const ph=Math.floor(p)%24; if(ph<=h && ph>prev) prev=ph; } return prev;
+  }
+  for(let h=0; h<24; h++){
+    const lp=lastRedAtOrBefore(h);
+    if(lp>=0){
+      const gap=h-lp;
+      if(gap>12){ col[h]="black"; }
+      else if(gap>10 && col[h]!=="red"){ col[h]="purple"; }
+    }
+  }
+  return col;
+}
+function EMOJI(c){ return c==="red"?"🟥":c==="orange"?"🟧":c==="green"?"🟩":c==="purple"?"🟪":c==="black"?"⬛":"🟦"; }
+function HG(c){ return (c==="red"||c==="black")?"▇":c==="orange"?"▆":(c==="green"||c==="purple")?"▅":"▄"; }
+
+/* ----- compute KPIs (display only) ----- */
+function computeKPI(){
+  const now=S._now, pills=[...S._plan_pills].sort((a,b)=>a-b), eats=[...S._eat_times].sort((a,b)=>a-b);
+  // last planned pill <= now
+  let lp=null; for(const p of pills){ if(p<=now) lp=p; }
+  // next planned pill >= now
+  let np=null; for(const p of pills){ if(p>=now){ np=p; break; } }
+  // last/next eat by proximity
+  let lm=null; for(const e of eats){ if(e<=now) lm=e; }
+  let ne=null; for(const e of eats){ if(e>=now){ ne=e; break; } }
+
+  q("kpi_lp").textContent = lp!=null? to12mm(lp) : "—";
+  q("kpi_np").textContent = np!=null? to12mm(np) : "—";
+  q("kpi_lm").textContent = lm!=null? to12mm(lm) : "—";
+  q("kpi_ne").textContent = ne!=null? to12mm(ne) : "—";
+}
+
+/* ----- render ----- */
+function render(){
+  computeKPI();
+
+  const colors=buildColors(S._plan_pills,S._eat_times,S._now);
+  q("hdr").textContent=hoursHeader12();
+  q("rowC").textContent=colors.map(EMOJI).join(" ");
+  q("rowH").textContent=colors.map(HG).join(" ");
+  // caret under current hour
+  const idx=Math.floor(S._now)%24;
+  const caret = Array(24).fill(" ").map((_,i)=>i===idx?"ˇ":" ").join("  ");
+  q("rowN").textContent=caret;
+
+  q("legend").textContent="🟥/▇ pill  🟧/▆ no-eat  🟩/▅ eat  🟦/▄ neutral  🟪 late>10h  ⬛ breach>12h";
+}
+
+/* ----- persistence ----- */
+function save(){ localStorage.setItem(LSKEY, JSON.stringify(S)); }
+function load(){
+  try{
+    const v=JSON.parse(localStorage.getItem(LSKEY)||"{}");
+    if(v && typeof v==="object"){
+      S={...S,...v};
+    }
+  }catch(e){}
+}
+
+/* ----- UI wiring ----- */
+function syncInputsFromState(){
+  q("now").value=S._now;
+  const P=[...S._plan_pills], E=[...S._eat_times];
+  q("p1").value=P[0]??6; q("p2").value=P[1]??14; q("p3").value=P[2]??22;
+  q("e1").value=E[0]??8;  q("e2").value=E[1]??13; q("e3").value=E[2]??18;
+}
+
+/* buttons */
+q("start").onclick=()=>{
+  S._day_started=true;
+  S._plan_pills=[6.0,14.0,22.0];
+  S._eat_times=[8.0,13.0,18.0];
+  save(); syncInputsFromState(); render();
+};
+q("apply").onclick=()=>{
+  const p1=roundQ(clamp24(q("p1").value));
+  const p2=roundQ(clamp24(q("p2").value));
+  const p3=roundQ(clamp24(q("p3").value));
+  const e1=roundQ(clamp24(q("e1").value));
+  const e2=roundQ(clamp24(q("e2").value));
+  const e3=roundQ(clamp24(q("e3").value));
+  S._plan_pills=[p1,p2,p3].sort((a,b)=>a-b);
+  S._eat_times=[e1,e2,e3].sort((a,b)=>a-b);
+  S._now=roundQ(clamp24(q("now").value));
+  S._day_started=true;
+  save(); render();
+};
+q("update").onclick=()=>{
+  S._now=roundQ(clamp24(q("now").value));
+  save(); render();
+};
+q("reset").onclick=()=>{
+  S={...S,_day_started:false,_plan_pills:[6,14,22],_eat_times:[8,13,18]};
+  save(); syncInputsFromState(); render();
+};
+
+/* init */
+load(); syncInputsFromState(); render();
+
+/* PWA */
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js').catch(()=>{}); }
+</script>
+</body>
+</html>
